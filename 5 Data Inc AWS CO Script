@@ -1,0 +1,48 @@
+#!/bin/bash
+# Script to create FINOPS Task - 5 DATA INC
+# Set AWS region
+REGION="us-east-1"
+NOW=$(date +%s)
+
+# 1. Identify EC2 instances inactive for 90 days
+echo "Checking for inactive EC2 instances..."
+aws ec2 describe-instances --query 'Reservations[*].Instances[*].[InstanceId,LaunchTime,InstanceType,State.Name]' --output text --region $REGION | \
+while read INSTANCE_ID LAUNCH_TIME INSTANCE_TYPE STATE; do
+    LAUNCH_SECONDS=$(date -d "$LAUNCH_TIME" +%s)
+    INACTIVE_DAYS=$(( ($NOW - $LAUNCH_SECONDS) / 86400 ))
+
+    if [[ "$STATE" == "running" && "$INACTIVE_DAYS" -gt 90 ]]; then
+        echo "EC2 $INSTANCE_ID ($INSTANCE_TYPE) inactive for $INACTIVE_DAYS days. Consider termination."
+    fi
+done
+
+# 2. Identify unused S3 buckets (no GET/PUT in last 90 days)
+echo "Checking for inactive S3 buckets..."
+aws s3api list-buckets --query 'Buckets[*].Name' --output text | \
+while read BUCKET; do
+    LAST_ACCESS=$(aws s3api get-bucket-logging --bucket $BUCKET --query 'LoggingEnabled.TargetBucket' --output text)
+    if [[ -z "$LAST_ACCESS" ]]; then
+        echo "S3 bucket $BUCKET has no logging, consider deletion."
+    fi
+done
+
+# 3. Identify RDS instances inactive for 90 days
+echo "Checking for inactive RDS instances..."
+aws rds describe-db-instances --query 'DBInstances[*].[DBInstanceIdentifier,InstanceCreateTime,DBInstanceStatus]' --output text --region $REGION | \
+while read DB_ID CREATE_TIME STATUS; do
+    CREATE_SECONDS=$(date -d "$CREATE_TIME" +%s)
+    INACTIVE_DAYS=$(( ($NOW - $CREATE_SECONDS) / 86400 ))
+
+    if [[ "$STATUS" == "available" && "$INACTIVE_DAYS" -gt 90 ]]; then
+        echo "RDS instance $DB_ID inactive for $INACTIVE_DAYS days. Consider deletion."
+    fi
+done
+
+# 4. Identify unattached EBS volumes
+echo "Checking for unattached EBS volumes..."
+aws ec2 describe-volumes --filters Name=status,Values=available --query 'Volumes[*].[VolumeId,Size]' --output text --region $REGION | \
+while read VOLUME_ID SIZE; do
+    echo "Unattached EBS volume $VOLUME_ID ($SIZE GiB). Consider deletion."
+done
+
+echo "AWS resource optimization check complete."
